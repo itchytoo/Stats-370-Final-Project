@@ -1,30 +1,10 @@
-########################################
-# File: importance_sampling.py
-# Author: Guinness Chen
-# Date: 06/12/2024
-# Description: Implementation of the Importance Sampling algorithm
-########################################
-
 # import libraries
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import argparse
 import seaborn as sns
-
-# Helper functions to calculate sums of squared residuals
-def calculate_rss(data, mu_1, mu_2, gamma_1, gamma_2, tau):
-    rss = 0
-    for y, t in data:
-        if t == 1:
-            rss += np.sum((y - np.array([mu_1, mu_2]))**2)
-        elif t == 2:
-            rss += np.sum((y - np.array([gamma_1, gamma_2]))**2)
-        elif t == 3:
-            rss += np.sum((y - 0.5 * (np.array([mu_1, mu_2]) + np.array([gamma_1, gamma_2])))**2)
-        elif t == 4:
-            rss += np.sum((y - (tau * np.array([mu_1, mu_2]) + (1 - tau) * np.array([gamma_1, gamma_2])))**2)
-    return rss
+from scipy.stats import gaussian_kde
 
 # Helper function to compute log likelihood
 def log_likelihood(data, mu_1, mu_2, sigma_squared, gamma_1, gamma_2, tau):
@@ -41,9 +21,7 @@ def log_likelihood(data, mu_1, mu_2, sigma_squared, gamma_1, gamma_2, tau):
     return log_lik
 
 # Importance Sampling algorithm
-def importance_sampling(data, n_samples, initial_position):
-    mu_1, mu_2, sigma_squared, gamma_1, gamma_2, tau = initial_position
-    
+def importance_sampling(data, n_samples):
     samples = []
     weights = []
 
@@ -54,17 +32,16 @@ def importance_sampling(data, n_samples, initial_position):
 
         # Stage 2: Sample mu and gamma
         mu_1 = np.random.normal(0, 1)
-        mu_2 = np.random.normal(0, 1)
-        gamma_1 = np.random.normal(0, 1)
-        gamma_2 = np.random.normal(0, 1)
+        mu_2 = np.random.normal(7.5, 2)
+        gamma_1 = np.random.normal(-0.5, 1)
+        gamma_2 = np.random.normal(10.5, 2)
 
         # Calculate the log of the target density (unnormalized)
         log_target_density = log_likelihood(data, mu_1, mu_2, sigma_squared, gamma_1, gamma_2, tau)
         log_target_density += -np.log(sigma_squared)  # prior for sigma_squared
-        log_target_density += 0  # priors for mu, gamma, and tau are uniform
 
         # Calculate the log of the proposal density
-        log_proposal_density = 0  # uniform priors for sigma_squared and tau
+        log_proposal_density = 0
         log_proposal_density += -0.5 * (mu_1**2 + mu_2**2 + gamma_1**2 + gamma_2**2)  # normal proposals for mu and gamma
 
         # Compute importance weight
@@ -80,48 +57,54 @@ def importance_sampling(data, n_samples, initial_position):
 
     return np.array(samples), normalized_weights
 
+# Function to plot weighted pair plot
+def weighted_pairplot(data, weights, **kwargs):
+    g = sns.PairGrid(data, **kwargs)
+
+    # Map upper to scatter plot with weights
+    def scatter_func(x, y, **kwargs):
+        plt.scatter(x, y, **kwargs)
+
+    g = g.map_upper(scatter_func, alpha=0.5)
+
+    # Map diagonal to weighted histplot
+    def hist_func(x, **kwargs):
+        plt.hist(x, weights=weights, bins=30, density=True, **kwargs)
+
+    g = g.map_diag(hist_func, color="g", edgecolor="black")
+
+    # Map lower to weighted KDE plot
+    def kde_func(x, y, **kwargs):
+        # Create weighted KDE
+        xy = np.vstack([x, y])
+        z = gaussian_kde(xy, weights=weights)(xy)
+        idx = z.argsort()
+        x, y, z = x[idx], y[idx], z[idx]
+        plt.scatter(x, y, c=z, s=50, cmap='viridis')
+
+    g = g.map_lower(kde_func)
+
+    return g
+
 # Main function
 def main(input_file):
     # Load the data
     df = pd.read_csv(input_file)
     data = [(np.array([row['gene1'], row['gene2']]), int(row['group'])) for _, row in df.iterrows()]
 
-    # Set the initial position
-    # set mu to be the sample mean of group 1
-    group_1_data = np.array([y for y, t in data if t == 1])
-   
-    mu_1 = np.mean([y[0] for y in group_1_data])
-    mu_2 = np.mean([y[1] for y in group_1_data])
-
-    # set gamma to be the sample mean of group 2
-    group_2_data = [y for y, t in data if t == 2]
-    gamma_1 = np.mean([y[0] for y in group_2_data])
-    gamma_2 = np.mean([y[1] for y in group_2_data])
-
-    sigma_squared = 1
-    
-    # set tau to be 0.5
-    tau = 0.5
-
-    initial_position = np.array([mu_1, mu_2, sigma_squared, gamma_1, gamma_2, tau])
-
-    n_samples = 1000
-    samples, normalized_weights = importance_sampling(data, n_samples, initial_position)
+    n_samples = 10000
+    samples, normalized_weights = importance_sampling(data, n_samples)
     
     # Save the samples and weights to a CSV file
     np.savetxt('importance_sampling_samples.csv', samples, delimiter=',')
     np.savetxt('importance_sampling_weights.csv', normalized_weights, delimiter=',')
 
-    # Plot weighted histograms for each parameter
-    parameter_names = ['mu_1', 'mu_2', 'sigma_squared', 'gamma_1', 'gamma_2', 'tau']
-    for i, param in enumerate(parameter_names):
-        plt.figure()
-        plt.hist(samples[:, i], weights=normalized_weights, bins=30, density=True, alpha=0.6, color='g')
-        plt.title(f'Weighted Histogram of {param}')
-        plt.xlabel(param)
-        plt.ylabel('Density')
-        plt.savefig(f'weighted_histogram_{param}.png')
+    # Convert samples to DataFrame
+    samples_df = pd.DataFrame(samples, columns=['mu_1', 'mu_2', 'sigma_squared', 'gamma_1', 'gamma_2', 'tau'])
 
+    # Plot weighted pair plot
+    pairplot = weighted_pairplot(samples_df, normalized_weights)
+    pairplot.fig.suptitle("Importance Sampling Pair Plot", y=1.02)
     plt.show()
 
 if __name__ == '__main__':
